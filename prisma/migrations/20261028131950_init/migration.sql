@@ -1,0 +1,3 @@
+-- Initial migration (foundation phase).
+-- No domain models yet: this migration only establishes the migration bookkeeping.
+-- Domain entities (incidents, triage, knowledge, audit, users) will be added in later phases.

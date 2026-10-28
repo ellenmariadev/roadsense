@@ -1,0 +1,225 @@
+// Road Sense - database schema
+// Phase 2: initial domain model (users, incidents, audit events, triage runs,
+// knowledge articles). No business workflows or LLM integrations yet.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums (controlled states from CONTRACT.md)
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum IncidentType {
+  ACCIDENT
+  VEHICLE_BREAKDOWN
+  ROAD_OBSTRUCTION
+  FLOODING
+  INFRASTRUCTURE_DAMAGE
+  OTHER
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  REPORTED
+  UNDER_REVIEW
+  CONFIRMED
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+}
+
+enum IncidentEventType {
+  INCIDENT_CREATED
+  ATTRIBUTE_CHANGED
+  PRIORITY_CHANGED
+  STATUS_TRANSITION
+  TRIAGE_EXECUTED
+  TRIAGE_FAILED
+  SUGGESTION_CONFIRMED
+  SUGGESTION_REJECTED
+  RESOLVED
+  CANCELLED
+}
+
+enum TriageStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  CONFIRMED
+  REJECTED
+}
+
+enum DuplicateStatus {
+  CONFIRMED
+  REJECTED
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         UserRole @default(VIEWER)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+
+  incidents         Incident[]
+  incidentEvents    IncidentEvent[]
+  knowledgeArticles KnowledgeArticle[]
+  confirmedDuplicates IncidentDuplicate[]
+
+  @@map("users")
+}
+
+model Incident {
+  id              String         @id @default(uuid())
+  // The original free-text report. Kept distinct from AI suggestions and
+  // human-confirmed values (see TriageRun for suggestions).
+  originalReport  String         @db.Text
+  // Human-confirmed values. Null until an operator confirms them.
+  incidentType    IncidentType?
+  description     String?        @db.Text
+  locationText    String?
+  roadName        String?
+  kilometerMarker String?
+  direction       String?
+  priority        Priority       @default(LOW)
+  riskFactors     String[]       @default([])
+  status          IncidentStatus @default(REPORTED)
+  reportedAt      DateTime       @default(now()) @db.Timestamptz(6)
+  resolvedAt      DateTime?      @db.Timestamptz(6)
+  cancelledAt     DateTime?      @db.Timestamptz(6)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime       @updatedAt @db.Timestamptz(6)
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  events        IncidentEvent[]
+  triageRuns    TriageRun[]
+  duplicateOf   IncidentDuplicate[] @relation("DuplicatePrimary")
+  duplicatedBy  IncidentDuplicate[] @relation("DuplicateSecondary")
+
+  @@index([status])
+  @@index([incidentType])
+  @@index([priority])
+  @@index([createdAt])
+  @@map("incidents")
+}
+
+model IncidentEvent {
+  id        String            @id @default(uuid())
+  type      IncidentEventType
+  // Relevant change metadata for the audit record (e.g. old/new values).
+  metadata  Json?
+  createdAt DateTime          @default(now()) @db.Timestamptz(6)
+
+  incidentId String
+  incident   Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  actorId String?
+  actor   User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([incidentId])
+  @@index([createdAt])
+  @@map("incident_events")
+}
+
+model TriageRun {
+  id         String       @id @default(uuid())
+  sourceText String       @db.Text
+  status     TriageStatus @default(PENDING)
+
+  // AI execution metadata (from CONTRACT.md section 8).
+  provider         String?
+  model            String?
+  latencyMs        Int?
+  promptTokens     Int?
+  completionTokens Int?
+  errorMessage     String?
+
+  // AI-generated suggestion (validated). Kept separate from human-confirmed
+  // values stored on Incident.
+  suggestedIncidentType    IncidentType?
+  suggestedDescription     String?        @db.Text
+  suggestedLocationText    String?
+  suggestedRoadName        String?
+  suggestedKilometerMarker String?
+  suggestedDirection       String?
+  riskFactors              String[]       @default([])
+  confidence               Float?
+  missingInformation       String[]       @default([])
+
+  idempotencyKey String?  @unique
+  requestedAt    DateTime @default(now()) @db.Timestamptz(6)
+  completedAt    DateTime? @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  incidentId String?
+  incident   Incident? @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+
+  @@index([incidentId])
+  @@index([status])
+  @@map("triage_runs")
+}
+
+model KnowledgeArticle {
+  id        String   @id @default(uuid())
+  title     String
+  content   String   @db.Text
+  tags      String[] @default([])
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  createdById String?
+  createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([title])
+  @@map("knowledge_articles")
+}
+
+model IncidentDuplicate {
+  id                  String          @id @default(uuid())
+  incidentId          String
+  duplicateIncidentId String
+  // Deterministic score and explainable signals recorded at confirmation time.
+  score               Float
+  signals             Json
+  status              DuplicateStatus @default(CONFIRMED)
+  confirmedById       String?
+  confirmedBy         User?           @relation(fields: [confirmedById], references: [id], onDelete: SetNull)
+  confirmedAt         DateTime        @default(now()) @db.Timestamptz(6)
+  createdAt           DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime        @updatedAt @db.Timestamptz(6)
+
+  incident  Incident @relation("DuplicatePrimary", fields: [incidentId], references: [id], onDelete: Cascade)
+  duplicate Incident @relation("DuplicateSecondary", fields: [duplicateIncidentId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentId, duplicateIncidentId])
+  @@index([incidentId])
+  @@index([duplicateIncidentId])
+  @@map("incident_duplicates")
+}

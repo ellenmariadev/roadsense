@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: road-sense-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-road_sense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-road_sense}
+      POSTGRES_DB: ${POSTGRES_DB:-road_sense}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - road_sense_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-road_sense} -d ${POSTGRES_DB:-road_sense}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  road_sense_pgdata:
