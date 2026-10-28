@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgresql://road_sense:road_sense@localhost:5432/road_sense?schema=public
+  JWT_SECRET: ci-only-jwt-secret-at-least-32-characters
+  JWT_EXPIRES_IN: 1h
+  LLM_PROVIDER: mock
+  SEED_ADMIN_EMAIL: ci-admin@roadsense.local
+  SEED_ADMIN_PASSWORD: CI-admin-password-123
+  SEED_OPERATOR_EMAIL: ci-operator@roadsense.local
+  SEED_OPERATOR_PASSWORD: CI-operator-password-123
+  SEED_VIEWER_EMAIL: ci-viewer@roadsense.local
+  SEED_VIEWER_PASSWORD: CI-viewer-password-123
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: road_sense
+          POSTGRES_PASSWORD: road_sense
+          POSTGRES_DB: road_sense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U road_sense -d road_sense"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npx prisma generate
+      - run: npm run prisma:deploy
+      - run: npm run prisma:seed
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test -- --runInBand
+      - run: npm run eval:mock
+      - name: API end-to-end tests
+        run: npm run test:e2e:api
+
+  frontend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: road_sense
+          POSTGRES_PASSWORD: road_sense
+          POSTGRES_DB: road_sense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U road_sense -d road_sense"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npx prisma generate
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend audit --omit=dev --audit-level=high
+      - run: npm --prefix frontend run lint
+      - run: npm --prefix frontend run typecheck
+      - run: npm --prefix frontend run build
+      - run: npm --prefix frontend exec playwright install --with-deps chromium
+      - name: Frontend end-to-end tests
+        run: npm run test:e2e:frontend
